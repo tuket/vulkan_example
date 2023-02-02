@@ -1,5 +1,7 @@
 Simple vulkan example that draws a textured quad.
 
+[Imgur](https://imgur.com/lxKDqOw)
+
 Code is contained in a few files:
 - src/main.cpp: entry point and main loop
 - src/helpers.hpp: simple helpers to reduce bit the code in main.cpp, so you can see the basic structure of a Vulkan program more clearly
