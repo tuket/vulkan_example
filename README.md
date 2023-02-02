@@ -1,6 +1,6 @@
 Simple vulkan example that draws a textured quad.
 
-![Imgur](https://imgur.com/lxKDqOw)
+![Imgur](https://i.imgur.com/lxKDqOw.png)
 
 Code is contained in a few files:
 - src/main.cpp: entry point and main loop
