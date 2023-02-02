@@ -628,22 +628,81 @@ void createStaticVertexBuffer(VkDevice device, VmaAllocator allocator, size_t si
 	}
 }
 
-#if 0
-void createStaticImage(VkDevice device, VmaAllocator, u32 width, u32 height, u32 layers, VkFormat format, u32 mipLevels, VkImage& img, VmaAllocation& allocation, VmaAllocationInfo* allocInfo = nullptr)
+struct Img {
+	u32 width = 1;
+	u32 height = 1;
+	u32 layers = 1;
+	u32 mipLevels = -1;
+	VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
+};
+
+u32 getMaxMipLevels(u32 width, u32 height)
 {
-	u32 maxMipLevels = 1;
-	u32 hw = width;
-	while()
-	mipLevels = glm::clamp(mipLevels, 1, )
-	VkImageCreateInfo imgInfo = {
+	u32 maxMipLevels = 0;
+	u32 hw = glm::max(width, height);
+	while (hw) {
+		maxMipLevels++;
+		hw >>= 1;
+	}
+	return maxMipLevels;
+}
+
+void clampMipLevels(u32& mipLevels, u32 width, u32 height)
+{
+	mipLevels = glm::clamp(mipLevels, 1u, getMaxMipLevels(width, height));
+}
+
+VkImageCreateInfo toImgCreateInfo(const Img& info)
+{
+	const VkImageCreateInfo imgInfo = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
-		.format = format,
-		.extent = {width, height, 1},
-		.mipLevels = 
+		.format = info.format,
+		.extent = {info.width, info.height, 1},
+		.mipLevels = info.mipLevels,
+		.arrayLayers = info.layers,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	return imgInfo;
+}
+
+void createStaticImage(VkDevice device, VmaAllocator allocator, Img& info, VkImage& img, VmaAllocation& allocation, VmaAllocationInfo* allocInfo = nullptr, VkImageView* view = nullptr)
+{
+	VmaAllocationInfo allocInfoTmp;
+	if (allocInfo == nullptr)
+		allocInfo = &allocInfoTmp;
+
+	clampMipLevels(info.mipLevels, info.width, info.height);
+
+	const VkImageCreateInfo createInfo = toImgCreateInfo(info);
+	const VmaAllocationCreateInfo allocCreateInfo = {
+		.usage = VMA_MEMORY_USAGE_AUTO,
+	};
+	VkResult vkRes = vmaCreateImage(allocator, &createInfo, &allocCreateInfo, &img, &allocation, allocInfo);
+	assertRes(vkRes);
+
+	if (view) {
+		const VkImageViewCreateInfo imgViewInfo = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = img,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = info.format,
+			.components = {VK_COMPONENT_SWIZZLE_IDENTITY},
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = info.mipLevels,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			},
+		};
+		vkRes = vkCreateImageView(device, &imgViewInfo, nullptr, view);
+		vk::assertRes(vkRes);
 	}
 }
-#endif
 
 void createStagingBuffer(VkDevice device, VmaAllocator allocator, size_t size, VkBuffer& buffer, VmaAllocation& allocation, VmaAllocationInfo* allocInfo = nullptr)
 {
@@ -659,6 +718,58 @@ void createStagingBuffer(VkDevice device, VmaAllocator allocator, size_t size, V
 	};
 	VkResult vkRes = vmaCreateBuffer(allocator, &bufferInfo, &allocCreateInfo, &buffer, &allocation, allocInfo);
 	assertRes(vkRes);
+}
+
+VkDescriptorPool createDescriptorPool(VkDevice device, u32 maxSets, std::span<const VkDescriptorPoolSize> typeSizes)
+{
+	const VkDescriptorPoolCreateInfo descPoolInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, // this allows to free descriptor sets individually, instead of having to reset the whole pool
+		.maxSets = maxSets,
+		.poolSizeCount = u32(typeSizes.size()),
+		.pPoolSizes = typeSizes.data(),
+	};
+	VkDescriptorPool pool;
+	VkResult vkRes = vkCreateDescriptorPool(device, &descPoolInfo, nullptr, &pool);
+	vk::assertRes(vkRes);
+	return pool;
+}
+
+void allocDescSets(VkDevice device, VkDescriptorPool pool, std::span<const VkDescriptorSetLayout> layouts, std::span<VkDescriptorSet> descSets)
+{
+	assert(layouts.size() == descSets.size());
+	const VkDescriptorSetAllocateInfo descSetAllocInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = pool,
+		.descriptorSetCount = u32(descSets.size()),
+		.pSetLayouts = layouts.data(),
+	};
+	VkResult vkRes = vkAllocateDescriptorSets(device, &descSetAllocInfo, descSets.data());
+	vk::assertRes(vkRes);
+}
+
+struct DescSetWriteTexture {
+	VkDescriptorSet descSet = VK_NULL_HANDLE;
+	u32 binding = 0;
+};
+
+void writeTextureDescriptor(VkDevice device, VkDescriptorSet descSet, u32 binding, VkImageView imgView, VkSampler sampler)
+{
+	const VkDescriptorImageInfo descImgInfo = {
+		.sampler = sampler,
+		.imageView = imgView,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	const VkWriteDescriptorSet writeDescSet = {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = descSet,
+		.dstBinding = binding,
+		.dstArrayElement = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &descImgInfo,
+	};
+	vkUpdateDescriptorSets(device, 1, &writeDescSet, 0, nullptr);
 }
 
 } // namesapce vk

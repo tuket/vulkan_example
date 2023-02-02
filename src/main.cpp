@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include "helpers.hpp"
+#include <stb_image.h>
 
 #define MY_VULKAN_VERSION VK_API_VERSION_1_1
 
@@ -12,16 +13,23 @@ using glm::vec4;
 
 GLFWwindow* window;
 
-struct BufferInfo {
+struct Buffer {
 	VkBuffer buffer;
 	VmaAllocation alloc;
 	VmaAllocationInfo allocInfo;
 };
 
 struct StagingProcess {
-	BufferInfo bufferInfo;
+	Buffer bufferInfo;
 	VkCommandBuffer cmdBuffer;
 	VkFence fence; // this fence will be sigaled once the transfer has finished, so we can delete the buffer
+};
+
+struct Img {
+	VkImage img;
+	VkImageView view;
+	VmaAllocation alloc;
+	VmaAllocationInfo allocInfo;
 };
 
 struct {
@@ -41,9 +49,13 @@ struct {
 	VkCommandPool cmdPool;
 	std::vector<VkCommandBuffer> cmdBuffers;
 	VkFramebuffer framebuffers[vk::Swapchain::MAX_IMAGES];
-	BufferInfo vertexBuffer;
+	Buffer vertexBuffer;
 	std::vector<StagingProcess> stagingProcs;
-
+	Img tentImg;
+	VkSampler bilinearSampler;
+	VkDescriptorPool descPool;
+	VkDescriptorSetLayout descriptorSetLayout;
+	VkDescriptorSet descSet;
 } vkd;
 
 static void onWindowResized(GLFWwindow* window, int w, int h)
@@ -56,7 +68,7 @@ static void onWindowResized(GLFWwindow* window, int w, int h)
 	}
 }
 
-static void recordCmdBuffer(u32 cmdBufferInd, u32 screenW, u32 screenH)
+static void recordDrawCmdBuffer(u32 cmdBufferInd, u32 screenW, u32 screenH)
 {
 	VkCommandBuffer& cmdBuffer = vkd.cmdBuffers[cmdBufferInd];
 	const VkCommandBufferBeginInfo beginInfo = {
@@ -92,8 +104,13 @@ static void recordCmdBuffer(u32 cmdBufferInd, u32 screenW, u32 screenH)
 
 
 		size_t offset = 0;
+		vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vkd.pipelineLayout,
+			0, 1, // firstSet, setCount
+			&vkd.descSet,
+			0, nullptr // dynamic offset
+		);
 		vkCmdBindVertexBuffers(cmdBuffer, 0, 1, &vkd.vertexBuffer.buffer, &offset);
-		vkCmdDraw(cmdBuffer, 3, 1, 0, 0);
+		vkCmdDraw(cmdBuffer, 6, 1, 0, 0);
 	}
 	vkCmdEndRenderPass(cmdBuffer);
 
@@ -150,7 +167,7 @@ int main()
 
 	struct Vert {
 		vec2 pos;
-		glm::u8vec4 color;
+		vec2 tc;
 	};
 
 	const VkVertexInputBindingDescription vertexInputBinding = {
@@ -168,8 +185,8 @@ int main()
 		{
 			.location = 1,
 			.binding = 0,
-			.format = VK_FORMAT_R8G8B8A8_UNORM,
-			.offset = offsetof(Vert, color),
+			.format = VK_FORMAT_R32G32_SFLOAT,
+			.offset = offsetof(Vert, tc),
 		}
 	};
 
@@ -180,7 +197,22 @@ int main()
 
 	const VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 
-	vkd.pipelineLayout = vk::createPipelineLayout(vkd.device, {}, {});
+	const VkDescriptorSetLayoutBinding descSetBinding = {
+		.binding = 0,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.descriptorCount = 1,
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		.pImmutableSamplers = nullptr,
+	};
+	const VkDescriptorSetLayoutCreateInfo descSetInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 1,
+		.pBindings = &descSetBinding,
+	};
+	vkRes = vkCreateDescriptorSetLayout(vkd.device, &descSetInfo, nullptr, &vkd.descriptorSetLayout);
+	vk::assertRes(vkRes);
+
+	vkd.pipelineLayout = vk::createPipelineLayout(vkd.device, {&vkd.descriptorSetLayout, 1}, {});
 
 	vkd.pipeline = vk::createGraphicsPipeline(vkd.device, {
 		.shaderStages = shaderStages,
@@ -205,9 +237,10 @@ int main()
 	vk::allocateCmdBuffers(vkd.device, vkd.cmdPool, vkd.cmdBuffers);
 
 	const Vert verts[] = {
-		{{-0.8, +0.8}, {255,0,0, 255}},
-		{{+0.8, +0.8}, {0,255,0, 255}},
-		{{0.0, -0.8}, {0,0,255, 255}},
+		{{-0.8, -0.8}, {0, 0}},
+		{{-0.8, +0.8}, {0, 1}},
+		{{+0.8, -0.8}, {1, 0}},
+		{{+0.8, +0.8}, {1, 1}},
 	};
 	vk::createStaticVertexBuffer(vkd.device, vkd.allocator, sizeof(verts),
 		vkd.vertexBuffer.buffer, vkd.vertexBuffer.alloc, &vkd.vertexBuffer.allocInfo);
@@ -254,7 +287,121 @@ int main()
 		vk::assertRes(vkRes);
 	}
 
-	bool pendingStaging = true;
+	// load image
+	{
+		int w, h, nc;
+		u8* data = stbi_load("data/tent.jpg", &w, &h, &nc, 4);
+		vk::Img imgInfo = {
+			.width = u32(w),
+			.height = u32(h),
+			.mipLevels = 1,
+		};
+		VmaAllocationInfo allocInfo;
+		vk::createStaticImage(vkd.device, vkd.allocator, imgInfo, vkd.tentImg.img, vkd.tentImg.alloc, &vkd.tentImg.allocInfo, &vkd.tentImg.view);
+
+		const size_t memSize = vkd.tentImg.allocInfo.size;
+		StagingProcess& stagingProc = vkd.stagingProcs.emplace_back();
+		vk::createStagingBuffer(vkd.device, vkd.allocator, memSize,
+			stagingProc.bufferInfo.buffer, stagingProc.bufferInfo.alloc, &stagingProc.bufferInfo.allocInfo);
+		memcpy(stagingProc.bufferInfo.allocInfo.pMappedData, data, memSize);
+		vmaFlushAllocation(vkd.allocator, stagingProc.bufferInfo.alloc, 0, VK_WHOLE_SIZE);
+
+		vk::allocateCmdBuffers(vkd.device, vkd.cmdPool, { &stagingProc.cmdBuffer, 1 });
+		vk::createFences(vkd.device, false, { &stagingProc.fence, 1 });
+
+		vk::beginCmdBuffer(stagingProc.cmdBuffer);
+		{
+			const VkImageSubresourceRange imgSubresRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			};
+
+			const VkImageMemoryBarrier imgBarrier_transferDst = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_NONE,
+				.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+				.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.image = vkd.tentImg.img,
+				.subresourceRange = imgSubresRange,
+			};
+			vkCmdPipelineBarrier(stagingProc.cmdBuffer,
+				VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				0, // VkDependencyFlags
+				0, nullptr, // memory barriers
+				0, nullptr, // buffer barriers
+				1, &imgBarrier_transferDst // img barriers
+			);
+
+			const VkBufferImageCopy copyRegion = {
+				.bufferOffset = 0,
+				.bufferRowLength = u32(w),
+				.bufferImageHeight = u32(h),
+				.imageSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = 0,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.imageOffset = {},
+				.imageExtent = {u32(w), u32(h), 1},
+			};
+			vkCmdCopyBufferToImage(stagingProc.cmdBuffer, stagingProc.bufferInfo.buffer, vkd.tentImg.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+			const VkImageMemoryBarrier imgBarrier_shaderOptimal = {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+				.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+				.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				.image = vkd.tentImg.img,
+				.subresourceRange = imgSubresRange,
+			};
+
+			vkCmdPipelineBarrier(
+				stagingProc.cmdBuffer,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+				0, // VkDependencyFlags
+				0, nullptr, // memory barriers
+				0, nullptr, // buffer barriers
+				1, &imgBarrier_shaderOptimal // img barriers
+			);
+		}
+		vkEndCommandBuffer(stagingProc.cmdBuffer);
+
+		const VkSubmitInfo submitInfo = {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &stagingProc.cmdBuffer,
+		};
+		vkRes = vkQueueSubmit(vkd.queue, 1, &submitInfo, stagingProc.fence);
+		vk::assertRes(vkRes);
+	}
+
+	const VkSamplerCreateInfo samplerInfo = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_LINEAR,
+		.minFilter = VK_FILTER_LINEAR,
+		//.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		//.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+	};
+	vkRes = vkCreateSampler(vkd.device, &samplerInfo, nullptr, &vkd.bilinearSampler);
+	vk::assertRes(vkRes);
+
+	const VkDescriptorPoolSize descPoolSizes[] = {
+		{
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 64,
+		}
+	};
+	vkd.descPool = vk::createDescriptorPool(vkd.device, 64, descPoolSizes);
+
+	vk::allocDescSets(vkd.device, vkd.descPool, { &vkd.descriptorSetLayout, 1 }, {&vkd.descSet, 1});
+
+	vk::writeTextureDescriptor(vkd.device, vkd.descSet, 0, vkd.tentImg.view, vkd.bilinearSampler);
 
 	u32 frameId = 0;
 	while (!glfwWindowShouldClose(window))
@@ -262,7 +409,6 @@ int main()
 		glfwPollEvents();
 		int screenW, screenH;
 		glfwGetFramebufferSize(window, &screenW, &screenH);
-
 
 		u32 swapchainImageInd;
 		vkRes = vkAcquireNextImageKHR(vkd.device, vkd.swapchain.swapchain, -1,
@@ -279,7 +425,7 @@ int main()
 		vkRes = vkResetFences(vkd.device, 1, &vkd.swapchain.fence_queueWorkFinished[swapchainImageInd]);
 		vk::assertRes(vkRes);
 
-		recordCmdBuffer(swapchainImageInd, u32(screenW), u32(screenH));
+		recordDrawCmdBuffer(swapchainImageInd, u32(screenW), u32(screenH));
 
 		const VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 		const VkSubmitInfo submitInfo = {

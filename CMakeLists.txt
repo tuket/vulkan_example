@@ -9,7 +9,7 @@ find_program(GLSLC glslc REQUIRED)
 add_subdirectory(libs/glm)
 add_subdirectory(libs/glfw)
 add_subdirectory(libs/vma)
-add_subdirectory(libs/imgui)
+add_subdirectory(libs/stb)
 
 file(GLOB_RECURSE glsl_files "${CMAKE_SOURCE_DIR}/shaders/*.glsl")
 foreach(glsl_file ${glsl_files})
@@ -30,7 +30,7 @@ set(SRCS
 )
 add_executable(vulkan_example ${SRCS})
 #target_link_libraries(vulkan_example Vulkan::Vulkan Vulkan::shaderc_combined glm glfw)
-target_link_libraries(vulkan_example Vulkan::Vulkan ${SHADERC_LIBRARIES} glm glfw vma imgui)
+target_link_libraries(vulkan_example Vulkan::Vulkan ${SHADERC_LIBRARIES} glm glfw vma stb)
 add_dependencies(vulkan_example shaders_target)
 set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT vulkan_example)
 set_target_properties(
