@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include "helpers.hpp"
 #include <stb_image.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 
 #define MY_VULKAN_VERSION VK_API_VERSION_1_1
 
@@ -111,6 +114,9 @@ static void recordDrawCmdBuffer(u32 cmdBufferInd, u32 screenW, u32 screenH)
 		);
 		vkCmdBindVertexBuffers(cmdBuffer, 0, 1, &vkd.vertexBuffer.buffer, &offset);
 		vkCmdDraw(cmdBuffer, 6, 1, 0, 0);
+	}
+	{
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdBuffer);
 	}
 	vkCmdEndRenderPass(cmdBuffer);
 
@@ -232,6 +238,42 @@ int main()
 	});
 
 	vkd.cmdPool = vk::createCmdPool(vkd.device, vkd.queueFamily, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
+
+	const VkDescriptorPoolSize descPoolSizes[] = {
+	{
+		.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.descriptorCount = 64,
+	}
+	};
+	vkd.descPool = vk::createDescriptorPool(vkd.device, 64, descPoolSizes);
+
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGui_ImplGlfw_InitForVulkan(window, true);
+
+	ImGui_ImplVulkan_InitInfo imguiVkInitInfo = {
+		.Instance = vkd.instance,
+		.PhysicalDevice = vkd.physicalDevice,
+		.Device = vkd.device,
+		.QueueFamily = vkd.queueFamily,
+		.Queue = vkd.queue,
+		//.PipelineCache = ,
+		.DescriptorPool = vkd.descPool, // TODO: use a specific pool for imgui?
+		.RenderPass = vkd.renderPass,
+		.MinImageCount = 2, // TODO: parametrize
+		.ImageCount = vkd.swapchain.numImages,
+		.MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+		.Subpass = 0,
+		//.Allocator =,
+		//.CheckVkResultFn = ,
+	};
+	ImGui_ImplVulkan_Init(&imguiVkInitInfo);
+
+	float dpiScaleX, dpiScaleY;
+	glfwGetWindowContentScale(window, &dpiScaleX, &dpiScaleY);
+
+	auto& imguiIO = ImGui::GetIO();
+	imguiIO.Fonts->AddFontFromFileTTF("data/Roboto-Medium.ttf", 14 * dpiScaleX);
 
 	vkd.cmdBuffers.resize(vkd.swapchain.numImages);
 	vk::allocateCmdBuffers(vkd.device, vkd.cmdPool, vkd.cmdBuffers);
@@ -391,14 +433,6 @@ int main()
 	vkRes = vkCreateSampler(vkd.device, &samplerInfo, nullptr, &vkd.bilinearSampler);
 	vk::assertRes(vkRes);
 
-	const VkDescriptorPoolSize descPoolSizes[] = {
-		{
-			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 64,
-		}
-	};
-	vkd.descPool = vk::createDescriptorPool(vkd.device, 64, descPoolSizes);
-
 	vk::allocDescSets(vkd.device, vkd.descPool, { &vkd.descriptorSetLayout, 1 }, {&vkd.descSet, 1});
 
 	vk::writeTextureDescriptor(vkd.device, vkd.descSet, 0, vkd.tentImg.view, vkd.bilinearSampler);
@@ -409,6 +443,15 @@ int main()
 		glfwPollEvents();
 		int screenW, screenH;
 		glfwGetFramebufferSize(window, &screenW, &screenH);
+
+		// Start the Dear ImGui frame
+		ImGui_ImplVulkan_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
+
+		ImGui::ShowDemoWindow();
+
+		ImGui::Render();
 
 		u32 swapchainImageInd;
 		vkRes = vkAcquireNextImageKHR(vkd.device, vkd.swapchain.swapchain, -1,

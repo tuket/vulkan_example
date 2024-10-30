@@ -12,6 +12,9 @@ set(SRCS
 	imstb_truetype.h
 	imgui_impl_glfw.h imgui_impl_glfw.cpp
 	imgui_impl_vulkan.h imgui_impl_vulkan.cpp
+
+	misc/debuggers/imgui.natvis
+	misc/debuggers/imgui.natstepfilter
 )
 add_library(imgui ${SRCS})
 target_include_directories(imgui PUBLIC ${PROJECT_SOURCE_DIR})
