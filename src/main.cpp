@@ -10,6 +10,8 @@
 
 #define MY_VULKAN_VERSION VK_API_VERSION_1_1
 
+static constexpr u32 MIN_SWAPCHAIN_IMAGES = 2;
+
 using glm::vec2;
 using glm::vec3;
 using glm::vec4;
@@ -160,7 +162,7 @@ int main()
 	vkRes = vmaCreateAllocator(&allocatorInfo, &vkd.allocator);
 	vk::assertRes(vkRes);
 
-	vk::create_swapChain(vkd.swapchain, vkd.physicalDevice, vkd.device, vkd.surface, 2, VK_PRESENT_MODE_FIFO_KHR);
+	vk::create_swapChain(vkd.swapchain, vkd.physicalDevice, vkd.device, vkd.surface, MIN_SWAPCHAIN_IMAGES, VK_PRESENT_MODE_FIFO_KHR);
 	for (u32 i = 0; i < vkd.swapchain.numImages; i++)
 		vkd.framebuffers[i] = VK_NULL_HANDLE;
 
@@ -258,14 +260,16 @@ int main()
 		.QueueFamily = vkd.queueFamily,
 		.Queue = vkd.queue,
 		//.PipelineCache = ,
-		.DescriptorPool = vkd.descPool, // TODO: use a specific pool for imgui?
+		.DescriptorPool = vkd.descPool,
 		.RenderPass = vkd.renderPass,
-		.MinImageCount = 2, // TODO: parametrize
+		.MinImageCount = MIN_SWAPCHAIN_IMAGES,
 		.ImageCount = vkd.swapchain.numImages,
 		.MSAASamples = VK_SAMPLE_COUNT_1_BIT,
 		.Subpass = 0,
 		//.Allocator =,
-		//.CheckVkResultFn = ,
+		.CheckVkResultFn = [](VkResult vkRes) {
+			vk::assertRes(vkRes);
+		},
 	};
 	ImGui_ImplVulkan_Init(&imguiVkInitInfo);
 
