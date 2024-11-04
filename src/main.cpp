@@ -437,6 +437,8 @@ int main()
 	vkRes = vkCreateSampler(vkd.device, &samplerInfo, nullptr, &vkd.bilinearSampler);
 	vk::assertRes(vkRes);
 
+	auto imguiTentTex = ImGui_ImplVulkan_AddTexture(vkd.bilinearSampler, vkd.tentImg.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
 	vk::allocDescSets(vkd.device, vkd.descPool, { &vkd.descriptorSetLayout, 1 }, {&vkd.descSet, 1});
 
 	vk::writeTextureDescriptor(vkd.device, vkd.descSet, 0, vkd.tentImg.view, vkd.bilinearSampler);
@@ -454,6 +456,10 @@ int main()
 		ImGui::NewFrame();
 
 		ImGui::ShowDemoWindow();
+
+		ImGui::Begin("img");
+		ImGui::Image(ImTextureID(imguiTentTex), { 256, 256 });
+		ImGui::End();
 
 		ImGui::Render();
 
